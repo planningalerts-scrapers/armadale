@@ -62,6 +62,36 @@ class Scraper
     end
   end
 
+  # Detail pages are hand-authored and the description markup varies. Older
+  # pages put it in an h2. Newer pages drop the h2 and instead lead with a
+  # styled span or a bold paragraph straight after the "Feedback closes" rule,
+  # so fall back to the first non-empty element after the hr.
+  def extract_description(project_div)
+    h2 = project_div.at("h2")
+    return clean_whitespace(h2.text) if h2
+
+    node = project_div.at("div.truncated-description hr")&.next_element
+    while node
+      text = clean_whitespace(node.text)
+      return text unless text.empty?
+
+      node = node.next_element
+    end
+    nil
+  end
+
+  # Many h1 titles fold a description prefix in front of the address,
+  # e.g. "Change of Use Family Day Care - Lot 311 24 Albavale Road Piara Waters"
+  # or "Medical Centre - 3043 Albany Highway, Kelmscott". Split off the prefix
+  # when the remainder looks like an address, but leave titles that already
+  # start with one alone (e.g. "Lot 372 - 8 Berkshire Approach Piara Waters").
+  def split_address(title)
+    return title if title.match?(/\A(Lot\b|No\.?\s*\d|\d)/i)
+
+    match = title.match(/\A.+?\s+-\s+((?:Lot\b|No\.?\s*\d|\d).*)\z/i)
+    match ? match[1] : title
+  end
+
   def parse_notice_date(text)
     # "Open for comments until Thu, 29 January 2026 - 4:00 pm"
     match = text.match(/until\s+\w+,\s+(\d+\s+\w+\s+\d{4})/)
@@ -126,22 +156,22 @@ class Scraper
       end
 
       h1 = project_div.at("h1")
-      h2 = project_div.at("h2")
-
-      unless h1 && h2
-        puts "Warning: Missing h1 or h2 in detail page (skipped)"
+      unless h1
+        puts "Warning: Missing h1 in detail page (skipped)"
         next
       end
 
-      address = clean_whitespace(h1.text)
-      description_raw = clean_whitespace(h2.text)
+      address = split_address(clean_whitespace(h1.text))
+      description_raw = extract_description(project_div) || clean_whitespace(h1.text)
 
-      # Remove address from end of description if it matches
-      description = if description_raw.end_with?(address)
+      # Remove address from end of description if it matches, but never
+      # empty the description doing so (some h2s repeat the full h1)
+      description = if description_raw.length > address.length && description_raw.end_with?(address)
                       clean_whitespace(description_raw[0...(description_raw.length - address.length)])
                     else
                       description_raw
                     end
+      description = description.sub(/\s*-\z/, "")
 
       # Add state to address if not present
       address = "#{address}, #{STATE}" unless address.end_with?(STATE)
